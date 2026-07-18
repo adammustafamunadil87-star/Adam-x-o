@@ -1,0 +1,6 @@
+{
+  "name": "لعبة آدم إكس أو",
+  "description": "لعبة إكس أو (Tic-Tac-Toe) ذكية وممتعة. العب ضد الذكاء الاصطناعي بثلاثة مستويات صعوبة أو تحدّ صديقك في نفس الجهاز.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
