@@ -3,27 +3,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import { LogIn, LogOut, User, Sparkles, CheckCircle2 } from 'lucide-react';
 import { UserProfile } from '../types';
 import { playClickSound } from '../utils/audio';
+import { auth, googleProvider } from '../utils/firebase';
+import { signInWithPopup, signOut, onAuthStateChanged } from 'firebase/auth';
 
 interface GoogleLoginProps {
   profile: UserProfile;
   onProfileChange: (profile: UserProfile) => void;
-}
-
-// Simple base64 JWT decoder
-function decodeJwt(token: string) {
-  try {
-    const base64Url = token.split('.')[1];
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    const jsonPayload = decodeURIComponent(
-      window.atob(base64)
-        .split('')
-        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
-        .join('')
-    );
-    return JSON.parse(jsonPayload);
-  } catch (e) {
-    return null;
-  }
 }
 
 export default function GoogleLogin({ profile, onProfileChange }: GoogleLoginProps) {
@@ -31,68 +16,67 @@ export default function GoogleLogin({ profile, onProfileChange }: GoogleLoginPro
   const [customName, setCustomName] = useState('');
   const [selectedAvatar, setSelectedAvatar] = useState('https://lh3.googleusercontent.com/a/default-user=s96-c');
 
-  const clientId = (import.meta as any).env?.VITE_GOOGLE_CLIENT_ID || '';
-
   useEffect(() => {
-    // Check if user is already saved in localStorage
+    // Listen for Firebase auth state changes
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        const newProfile: UserProfile = {
+          name: user.displayName || 'مستحدم جوجل',
+          email: user.email || undefined,
+          picture: user.photoURL || 'https://lh3.googleusercontent.com/a/default-user=s96-c',
+          isLoggedIn: true,
+        };
+        onProfileChange(newProfile);
+        localStorage.setItem('xo_user_profile', JSON.stringify(newProfile));
+      } else {
+        // Only reset if we were logged in via Google
+        const savedUser = localStorage.getItem('xo_user_profile');
+        if (savedUser) {
+          try {
+            const parsed = JSON.parse(savedUser);
+            if (parsed.isLoggedIn && parsed.email) {
+              // It was a Google account, so log them out locally too
+              onProfileChange({ name: 'لاعب زائر', isLoggedIn: false });
+              localStorage.removeItem('xo_user_profile');
+            }
+          } catch (e) {
+            // ignore
+          }
+        }
+      }
+    });
+
+    // Check if user is saved in localStorage (e.g. for simulated login)
     const savedUser = localStorage.getItem('xo_user_profile');
     if (savedUser) {
       try {
-        onProfileChange(JSON.parse(savedUser));
+        const parsed = JSON.parse(savedUser);
+        onProfileChange(parsed);
       } catch (e) {
         // ignore
       }
     }
-  }, []);
 
-  useEffect(() => {
-    if (!clientId) return;
+    return () => unsubscribe();
+  }, [onProfileChange]);
 
-    // Initialize GIS Client-side Sign-in when script loads
-    const initGis = () => {
-      if (typeof window !== 'undefined' && (window as any).google) {
-        (window as any).google.accounts.id.initialize({
-          client_id: clientId,
-          callback: (response: any) => {
-            const decoded = decodeJwt(response.credential);
-            if (decoded) {
-              const newProfile: UserProfile = {
-                name: decoded.name || 'مستخدم جوجل',
-                email: decoded.email,
-                picture: decoded.picture || 'https://lh3.googleusercontent.com/a/default-user=s96-c',
-                isLoggedIn: true,
-              };
-              onProfileChange(newProfile);
-              localStorage.setItem('xo_user_profile', JSON.stringify(newProfile));
-            }
-          },
-        });
-      }
-    };
-
-    // Retry initialization a couple times if window.google is not immediately loaded
-    const checkInterval = setInterval(() => {
-      if ((window as any).google) {
-        initGis();
-        clearInterval(checkInterval);
-      }
-    }, 500);
-
-    return () => clearInterval(checkInterval);
-  }, [clientId]);
-
-  const handleGoogleLoginClick = () => {
+  const handleGoogleLoginClick = async () => {
     playClickSound();
-    if (clientId) {
-      // Trigger GIS Login Prompt
-      try {
-        (window as any).google.accounts.id.prompt();
-      } catch (err) {
-        // Fallback to simulated login if prompt fails
-        setShowSimulatedLogin(true);
+    try {
+      const result = await signInWithPopup(auth, googleProvider);
+      if (result.user) {
+        const newProfile: UserProfile = {
+          name: result.user.displayName || 'مستخدم جوجل',
+          email: result.user.email || undefined,
+          picture: result.user.photoURL || 'https://lh3.googleusercontent.com/a/default-user=s96-c',
+          isLoggedIn: true,
+        };
+        onProfileChange(newProfile);
+        localStorage.setItem('xo_user_profile', JSON.stringify(newProfile));
       }
-    } else {
-      // No Google Client ID configured: use our gorgeous simulated Google Sign-In
+    } catch (err) {
+      console.error("Firebase Sign-In Error:", err);
+      // Fallback to simulated login if popup gets blocked or fails
       setShowSimulatedLogin(true);
     }
   };
@@ -114,8 +98,13 @@ export default function GoogleLogin({ profile, onProfileChange }: GoogleLoginPro
     setShowSimulatedLogin(false);
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     playClickSound();
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error("Firebase Sign-Out Error:", err);
+    }
     const guestProfile: UserProfile = {
       name: 'لاعب زائر',
       isLoggedIn: false,
@@ -137,7 +126,7 @@ export default function GoogleLogin({ profile, onProfileChange }: GoogleLoginPro
         <motion.div 
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="flex items-center justify-between bg-emerald-600/10 border border-emerald-500/20 p-4 rounded-2xl shadow-sm"
+          className="flex items-center justify-between bg-emerald-600/10 border border-emerald-500/20 p-4 rounded-2xl shadow-sm animate-fade-in"
         >
           <div className="flex items-center gap-3">
             <div className="relative">
@@ -162,7 +151,7 @@ export default function GoogleLogin({ profile, onProfileChange }: GoogleLoginPro
           </div>
           <button
             onClick={handleLogout}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-900/30 text-xs text-gray-400 hover:text-rose-400 rounded-xl transition duration-200"
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-900/30 text-xs text-gray-400 hover:text-rose-400 rounded-xl transition duration-200 cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5" />
             <span>تسجيل خروج</span>
@@ -185,9 +174,8 @@ export default function GoogleLogin({ profile, onProfileChange }: GoogleLoginPro
           <button
             type="button"
             onClick={handleGoogleLoginClick}
-            className="w-full flex items-center justify-center gap-3 bg-white hover:bg-gray-100 text-slate-900 font-bold py-3 px-4 rounded-xl shadow-lg transition duration-200 transform active:scale-[0.98]"
+            className="w-full flex items-center justify-center gap-3 bg-white hover:bg-gray-100 text-slate-900 font-bold py-3 px-4 rounded-xl shadow-lg transition duration-200 transform active:scale-[0.98] cursor-pointer"
           >
-            {/* Google Icon SVG */}
             <svg className="w-5 h-5" viewBox="0 0 24 24">
               <path fill="#EA4335" d="M12.24 10.285V14.4h6.887c-.275 1.565-1.88 4.604-6.887 4.604-4.33 0-7.859-3.578-7.859-8s3.53-8 7.859-8c2.46 0 4.105 1.025 5.047 1.926l3.227-3.11C18.28 1.845 15.548 1 12.24 1 5.48 1 0 6.37 0 13s5.48 12 12.24 12c7.054 0 11.75-4.83 11.75-11.64 0-.785-.087-1.39-.193-2.075H12.24z"/>
             </svg>

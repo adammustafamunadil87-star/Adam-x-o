@@ -30,8 +30,32 @@ import Confetti from './components/Confetti';
 import { checkWinner, getComputerMove } from './utils/ai';
 import { playMoveSound, playWinSound, playDrawSound, playClickSound, setMuted as setAudioMuted } from './utils/audio';
 
-// Import Socket.io Client
-import { io } from 'socket.io-client';
+// Import Firebase / Firestore
+import { 
+  doc, 
+  setDoc, 
+  getDoc, 
+  updateDoc, 
+  collection, 
+  query, 
+  where, 
+  orderBy, 
+  onSnapshot, 
+  limit, 
+  getDocs,
+  addDoc
+} from 'firebase/firestore';
+import { db, auth, handleFirestoreError, OperationType } from './utils/firebase';
+
+// Helper function to generate safe short room IDs
+function generateRoomId() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  let result = '';
+  for (let i = 0; i < 6; i++) {
+    result += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return result;
+}
 
 export default function App() {
   // Game Setup
@@ -55,7 +79,6 @@ export default function App() {
   });
 
   // --- ONLINE MULTIPLAYER STATES ---
-  const [socket, setSocket] = useState<any>(null);
   const [onlineRoom, setOnlineRoom] = useState<OnlineRoomState | null>(null);
   const [onlineSymbol, setOnlineSymbol] = useState<SymbolType | null>(null); // 'X' or 'O' in remote room
   const [isSearching, setIsSearching] = useState(false);
@@ -68,6 +91,10 @@ export default function App() {
   const [showChat, setShowChat] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Firestore listeners unsubscribe refs
+  const roomUnsubscribeRef = useRef<(() => void) | null>(null);
+  const chatUnsubscribeRef = useRef<(() => void) | null>(null);
+
   // Initialize Sound Settings
   useEffect(() => {
     const savedMute = localStorage.getItem('xo_game_muted');
@@ -75,123 +102,13 @@ export default function App() {
       setIsMuted(true);
       setAudioMuted(true);
     }
-  }, []);
-
-  // Connect socket once if we want to play online
-  useEffect(() => {
-    if (settings?.mode === 'online' && !socket) {
-      // Connects directly back to the Express container serving the applet
-      const newSocket = io();
-      setSocket(newSocket);
-
-      newSocket.on('connect', () => {
-        console.log('Connected to game server.');
-      });
-
-      newSocket.on('room_created', (data: { roomId: string; symbol: SymbolType }) => {
-        setOnlineSymbol(data.symbol);
-        setOnlineRoom({
-          id: data.roomId,
-          players: [{ id: newSocket.id, name: profile.name, picture: profile.picture, symbol: data.symbol }],
-          board: Array(9).fill(null),
-          turn: 'X',
-          gameOver: false,
-          winner: null
-        });
-        setIsSearching(false);
-        setJoinError(null);
-      });
-
-      newSocket.on('room_joined', (data: { roomId: string; symbol: SymbolType }) => {
-        setOnlineSymbol(data.symbol);
-        setIsSearching(false);
-        setJoinError(null);
-      });
-
-      newSocket.on('room_update', (updatedRoom: OnlineRoomState) => {
-        setOnlineRoom(updatedRoom);
-        
-        // Count scoreboard stats if the game ends
-        if (updatedRoom.gameOver) {
-          // Play win/draw sound based on outcome
-          if (updatedRoom.winner === 'draw') {
-            playDrawSound();
-          } else if (updatedRoom.winner === onlineSymbol) {
-            playWinSound();
-          } else {
-            playDrawSound(); // or loss sound
-          }
-        }
-      });
-
-      newSocket.on('join_error', (data: { message: string }) => {
-        setJoinError(data.message);
-        setIsSearching(false);
-      });
-
-      newSocket.on('game_over', (data: { winner: 'X' | 'O' | 'draw'; board: BoardState; winningLine?: number[] }) => {
-        setOnlineRoom(prev => {
-          if (!prev) return null;
-          return {
-            ...prev,
-            board: data.board,
-            gameOver: true,
-            winner: data.winner === 'draw' ? 'draw' : data.winner
-          };
-        });
-        setWinningLine(data.winningLine);
-        setGameOver(true);
-        setWinner(data.winner);
-
-        // Update remote score counters
-        if (data.winner === 'draw') {
-          setStats(prev => ({ ...prev, draws: prev.draws + 1 }));
-          playDrawSound();
-        } else {
-          if (data.winner === onlineSymbol) {
-            setStats(prev => ({ ...prev, player1Wins: prev.player1Wins + 1 }));
-            playWinSound();
-          } else {
-            setStats(prev => ({ ...prev, player2Wins: prev.player2Wins + 1 }));
-            playDrawSound();
-          }
-        }
-      });
-
-      newSocket.on('rematch_started', (newRoom: OnlineRoomState) => {
-        setOnlineRoom(newRoom);
-        setGameOver(false);
-        setWinner(null);
-        setWinningLine(undefined);
-        playClickSound();
-      });
-
-      newSocket.on('receive_chat', (data: { roomId: string; senderName: string; message: string }) => {
-        const time = new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
-        setChatMessages(prev => [...prev, { sender: data.senderName, text: data.message, time }]);
-        
-        // Play soft sound on receiving chat or buzz
-        if (data.message.includes('🔊')) {
-          playWinSound(); // Trigger a fun chime sound for buzz
-        } else {
-          playMoveSound(true);
-        }
-      });
-
-      newSocket.on('player_left', (data: { message: string }) => {
-        alert(data.message);
-        // Return to home state or settings
-        handleGoHome();
-      });
-    }
 
     return () => {
-      if (socket && settings?.mode !== 'online') {
-        socket.disconnect();
-        setSocket(null);
-      }
+      // Cleanup listeners on unmount
+      if (roomUnsubscribeRef.current) roomUnsubscribeRef.current();
+      if (chatUnsubscribeRef.current) chatUnsubscribeRef.current();
     };
-  }, [settings?.mode]);
+  }, []);
 
   // Scroll to bottom of chat automatically
   useEffect(() => {
@@ -212,13 +129,25 @@ export default function App() {
     startNewRound(newSettings);
   };
 
-  const startNewRound = (currentSettings = settings) => {
+  const startNewRound = async (currentSettings = settings) => {
     if (!currentSettings) return;
 
     if (currentSettings.mode === 'online') {
-      // For online, request rematch from server
-      if (socket && onlineRoom) {
-        socket.emit('request_rematch', { roomId: onlineRoom.id });
+      if (onlineRoom) {
+        // Reset the room's board to initial state in Firestore
+        const updates = {
+          board: Array(9).fill(null),
+          turn: 'X',
+          gameOver: false,
+          winner: null,
+          updatedAt: new Date().toISOString(),
+          lastActionTime: Date.now()
+        };
+        try {
+          await updateDoc(doc(db, 'rooms', onlineRoom.id), updates);
+        } catch (error) {
+          handleFirestoreError(error, OperationType.WRITE, `rooms/${onlineRoom.id}`);
+        }
       }
       return;
     }
@@ -341,91 +270,389 @@ export default function App() {
     }
   };
 
+  // Ensure Firebase authentication state is ready before remote gameplay
+  const ensureUserSignedIn = async () => {
+    if (auth.currentUser) return auth.currentUser;
+    
+    const { signInAnonymously, updateProfile } = await import('firebase/auth');
+    try {
+      const cred = await signInAnonymously(auth);
+      await updateProfile(cred.user, {
+        displayName: profile.name || 'لاعب زائر'
+      });
+      return cred.user;
+    } catch (err) {
+      console.error("Anonymous sign in failed:", err);
+      throw err;
+    }
+  };
+
+  // Real-time Firestore Room synchronizer
+  const setupRoomListener = (roomId: string, mySymbol: SymbolType) => {
+    // Unsubscribe from any active listeners first
+    if (roomUnsubscribeRef.current) roomUnsubscribeRef.current();
+    if (chatUnsubscribeRef.current) chatUnsubscribeRef.current();
+
+    // Listen to parent room document
+    const roomRef = doc(db, 'rooms', roomId);
+    const unsubRoom = onSnapshot(roomRef, (snapshot) => {
+      if (!snapshot.exists()) {
+        alert('تم إلغاء أو حذف هذه الغرفة من السيرفر.');
+        handleGoHome();
+        return;
+      }
+
+      const data = snapshot.data() as any;
+      setOnlineRoom({
+        id: data.id,
+        players: data.players,
+        board: data.board,
+        turn: data.turn,
+        gameOver: data.gameOver,
+        winner: data.winner
+      });
+      setIsSearching(false);
+
+      // Match second player dynamically
+      if (data.players.length === 2) {
+        const opponent = data.players.find((p: any) => p.id !== auth.currentUser?.uid);
+        if (opponent) {
+          setSettings(prev => {
+            if (!prev) return null;
+            return {
+              ...prev,
+              player2Name: opponent.name
+            };
+          });
+        }
+      }
+
+      // Handle terminal game state
+      if (data.gameOver) {
+        setWinner(data.winner);
+        setGameOver(true);
+
+        const result = checkWinner(data.board);
+        if (result.winner && result.combination) {
+          setWinningLine(result.combination);
+        } else {
+          setWinningLine(undefined);
+        }
+
+        // Play sounds and score updates locally
+        if (data.winner === 'draw') {
+          setStats(prev => ({ ...prev, draws: prev.draws + 1 }));
+          playDrawSound();
+        } else {
+          if (data.winner === mySymbol) {
+            setStats(prev => ({ ...prev, player1Wins: prev.player1Wins + 1 }));
+            playWinSound();
+          } else {
+            setStats(prev => ({ ...prev, player2Wins: prev.player2Wins + 1 }));
+            playDrawSound();
+          }
+        }
+      } else {
+        setGameOver(false);
+        setWinner(null);
+        setWinningLine(undefined);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `rooms/${roomId}`);
+    });
+
+    roomUnsubscribeRef.current = unsubRoom;
+
+    // Listen to messages subcollection (ordered chronologically)
+    const messagesRef = collection(db, 'rooms', roomId, 'messages');
+    const q = query(messagesRef, orderBy('createdAt', 'asc'));
+
+    const unsubChat = onSnapshot(q, (snapshot) => {
+      const msgs: any[] = [];
+      snapshot.forEach((docSnap) => {
+        const msgData = docSnap.data();
+        const seconds = msgData.createdAt?.seconds || (Date.now() / 1000);
+        const timeStr = new Date(seconds * 1000).toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+        msgs.push({
+          sender: msgData.senderName,
+          text: msgData.text,
+          time: timeStr
+        });
+      });
+
+      setChatMessages(msgs);
+
+      // Play soft sounds on new incoming messages
+      if (msgs.length > 0) {
+        const lastMsg = msgs[msgs.length - 1];
+        if (lastMsg.sender !== profile.name) {
+          if (lastMsg.text.includes('🔔')) {
+            playWinSound(); // Trigger chime for buzz
+          } else {
+            playMoveSound(true);
+          }
+        }
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.GET, `rooms/${roomId}/messages`);
+    });
+
+    chatUnsubscribeRef.current = unsubChat;
+  };
+
   // --- ONLINE GAMEPLAY TRIGGERS ---
-  const handleCreateOnlineRoom = (symbol: SymbolType) => {
-    setSettings({
-      mode: 'online',
-      difficulty: 'easy',
-      userSymbol: symbol,
-      firstPlayer: 'user',
-      player1Name: profile.name,
-      player2Name: 'لاعب آخر'
-    });
-    setStats({ player1Wins: 0, player2Wins: 0, draws: 0 });
-    setChatMessages([]);
+  const handleCreateOnlineRoom = async (symbol: SymbolType) => {
     setIsSearching(true);
+    setJoinError(null);
+    setChatMessages([]);
 
-    // Delay socket trigger to ensure socket initialization
-    setTimeout(() => {
-      if (socket) {
-        socket.emit('create_room', { playerName: profile.name, playerPicture: profile.picture, userSymbol: symbol });
-      }
-    }, 400);
+    try {
+      const user = await ensureUserSignedIn();
+      const roomId = generateRoomId();
+
+      setSettings({
+        mode: 'online',
+        difficulty: 'easy',
+        userSymbol: symbol,
+        firstPlayer: 'user',
+        player1Name: profile.name,
+        player2Name: 'لاعب آخر'
+      });
+      setStats({ player1Wins: 0, player2Wins: 0, draws: 0 });
+      setOnlineSymbol(symbol);
+
+      const roomData = {
+        id: roomId,
+        players: [{
+          id: user.uid,
+          name: profile.name,
+          picture: profile.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.uid}`,
+          symbol: symbol
+        }],
+        board: Array(9).fill(null),
+        turn: 'X',
+        gameOver: false,
+        winner: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastActionTime: Date.now(),
+        playerCount: 1
+      };
+
+      await setDoc(doc(db, 'rooms', roomId), roomData);
+      setupRoomListener(roomId, symbol);
+    } catch (error) {
+      console.error(error);
+      setJoinError('فشل إنشاء غرفة اللعب أونلاين. يرجى إعادة المحاولة.');
+      setIsSearching(false);
+    }
   };
 
-  const handleJoinOnlineRoom = (code: string) => {
-    setSettings({
-      mode: 'online',
-      difficulty: 'easy',
-      userSymbol: 'O', // Default, will be updated by server room config
-      firstPlayer: 'user',
-      player1Name: profile.name,
-      player2Name: 'مضيف الغرفة'
-    });
-    setStats({ player1Wins: 0, player2Wins: 0, draws: 0 });
-    setChatMessages([]);
-    setIsSearching(true);
+  const handleJoinOnlineRoom = async (code: string) => {
+    const formattedCode = code.trim().toUpperCase();
+    if (!formattedCode) {
+      setJoinError('يرجى كتابة رمز الغرفة أولاً!');
+      return;
+    }
 
-    setTimeout(() => {
-      if (socket) {
-        socket.emit('join_room', { roomId: code, playerName: profile.name, playerPicture: profile.picture });
+    setIsSearching(true);
+    setJoinError(null);
+    setChatMessages([]);
+
+    try {
+      const user = await ensureUserSignedIn();
+      const roomRef = doc(db, 'rooms', formattedCode);
+      const roomSnap = await getDoc(roomRef);
+
+      if (!roomSnap.exists()) {
+        setJoinError('الغرفة غير موجودة، يرجى التحقق من الرمز الصحيح.');
+        setIsSearching(false);
+        return;
       }
-    }, 400);
+
+      const roomData = roomSnap.data();
+      if (roomData.gameOver) {
+        setJoinError('هذه اللعبة انتهت بالفعل.');
+        setIsSearching(false);
+        return;
+      }
+
+      if (roomData.players.length >= 2) {
+        // Reconnect check
+        const isParticipant = roomData.players.some((p: any) => p.id === user.uid);
+        if (!isParticipant) {
+          setJoinError('هذه الغرفة ممتلئة باللاعبين.');
+          setIsSearching(false);
+          return;
+        }
+      }
+
+      let mySymbol: SymbolType = 'O';
+      const players = [...roomData.players];
+      const meInRoom = players.find((p: any) => p.id === user.uid);
+
+      if (meInRoom) {
+        mySymbol = meInRoom.symbol;
+      } else {
+        const hostSymbol = players[0].symbol;
+        mySymbol = hostSymbol === 'X' ? 'O' : 'X';
+        players.push({
+          id: user.uid,
+          name: profile.name,
+          picture: profile.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.uid}`,
+          symbol: mySymbol
+        });
+
+        await updateDoc(roomRef, {
+          players: players,
+          playerCount: 2,
+          updatedAt: new Date().toISOString(),
+          lastActionTime: Date.now()
+        });
+      }
+
+      setSettings({
+        mode: 'online',
+        difficulty: 'easy',
+        userSymbol: mySymbol,
+        firstPlayer: 'user',
+        player1Name: profile.name,
+        player2Name: players.find(p => p.id !== user.uid)?.name || 'مضيف الغرفة'
+      });
+      setStats({ player1Wins: 0, player2Wins: 0, draws: 0 });
+      setOnlineSymbol(mySymbol);
+
+      setupRoomListener(formattedCode, mySymbol);
+    } catch (error) {
+      console.error(error);
+      setJoinError('تعذر الدخول للغرفة. تأكد من جودة الاتصال.');
+      setIsSearching(false);
+    }
   };
 
-  const handleQuickMatch = () => {
-    setSettings({
-      mode: 'online',
-      difficulty: 'easy',
-      userSymbol: 'X',
-      firstPlayer: 'user',
-      player1Name: profile.name,
-      player2Name: 'لاعب منافس'
-    });
-    setStats({ player1Wins: 0, player2Wins: 0, draws: 0 });
-    setChatMessages([]);
+  const handleQuickMatch = async () => {
     setIsSearching(true);
+    setJoinError(null);
+    setChatMessages([]);
 
-    setTimeout(() => {
-      if (socket) {
-        socket.emit('quick_match', { playerName: profile.name, playerPicture: profile.picture });
+    try {
+      const user = await ensureUserSignedIn();
+      const roomsRef = collection(db, 'rooms');
+      const q = query(
+        roomsRef,
+        where('playerCount', '==', 1),
+        where('gameOver', '==', false),
+        limit(5)
+      );
+
+      const querySnapshot = await getDocs(q);
+      let targetRoomId: string | null = null;
+      let targetRoomData: any = null;
+
+      querySnapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        if (data.players[0].id !== user.uid) {
+          targetRoomId = docSnap.id;
+          targetRoomData = data;
+        }
+      });
+
+      if (targetRoomId && targetRoomData) {
+        // Join found open room
+        const hostSymbol = targetRoomData.players[0].symbol;
+        const mySymbol: SymbolType = hostSymbol === 'X' ? 'O' : 'X';
+        const players = [
+          ...targetRoomData.players,
+          {
+            id: user.uid,
+            name: profile.name,
+            picture: profile.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.uid}`,
+            symbol: mySymbol
+          }
+        ];
+
+        await updateDoc(doc(db, 'rooms', targetRoomId), {
+          players: players,
+          playerCount: 2,
+          updatedAt: new Date().toISOString(),
+          lastActionTime: Date.now()
+        });
+
+        setSettings({
+          mode: 'online',
+          difficulty: 'easy',
+          userSymbol: mySymbol,
+          firstPlayer: 'user',
+          player1Name: profile.name,
+          player2Name: targetRoomData.players[0].name
+        });
+        setStats({ player1Wins: 0, player2Wins: 0, draws: 0 });
+        setOnlineSymbol(mySymbol);
+
+        setupRoomListener(targetRoomId, mySymbol);
+      } else {
+        // Create new match room
+        const startSymbol: SymbolType = Math.random() < 0.5 ? 'X' : 'O';
+        await handleCreateOnlineRoom(startSymbol);
       }
-    }, 400);
+    } catch (error) {
+      console.error(error);
+      setJoinError('فشل إجراء البحث السريع. حاول مرة أخرى.');
+      setIsSearching(false);
+    }
   };
 
-  const handleOnlineCellClick = (idx: number) => {
+  const handleOnlineCellClick = async (idx: number) => {
     if (!onlineRoom || onlineRoom.gameOver || onlineRoom.turn !== onlineSymbol || onlineRoom.board[idx] !== null) {
       return;
     }
-    if (socket) {
-      socket.emit('make_move', { roomId: onlineRoom.id, index: idx, symbol: onlineSymbol });
+
+    const newBoard = [...onlineRoom.board];
+    newBoard[idx] = onlineSymbol;
+
+    const result = checkWinner(newBoard);
+    const updates: any = {
+      board: newBoard,
+      updatedAt: new Date().toISOString(),
+      lastActionTime: Date.now()
+    };
+
+    if (result.winner) {
+      updates.gameOver = true;
+      updates.winner = result.winner;
+    } else {
+      updates.turn = onlineSymbol === 'X' ? 'O' : 'X';
+    }
+
+    try {
+      await updateDoc(doc(db, 'rooms', onlineRoom.id), updates);
+      playMoveSound(onlineSymbol === 'X');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `rooms/${onlineRoom.id}`);
     }
   };
 
-  // Online Chat send message
-  const handleSendChat = (messageText: string = chatInput) => {
+  const handleSendChat = async (messageText: string = chatInput) => {
     const textToSend = messageText.trim();
-    if (!textToSend || !socket || !onlineRoom) return;
+    if (!textToSend || !onlineRoom || !auth.currentUser) return;
 
-    socket.emit('send_chat', {
-      roomId: onlineRoom.id,
-      senderName: profile.name,
-      message: textToSend
-    });
-    setChatInput('');
+    const playerIds = onlineRoom.players.map(p => p.id);
+
+    try {
+      const messagesRef = collection(db, 'rooms', onlineRoom.id, 'messages');
+      await addDoc(messagesRef, {
+        senderName: profile.name,
+        senderId: auth.currentUser.uid,
+        text: textToSend,
+        roomPlayers: playerIds,
+        createdAt: new Date()
+      });
+      setChatInput('');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, `rooms/${onlineRoom.id}/messages`);
+    }
   };
 
-  // Buzz opponent with a fun vibration or ding sound
   const handleSendBuzz = () => {
     playClickSound();
     handleSendChat('🔔 تنبيه! خصمك بانتظار خطوتك ⚡');
@@ -438,10 +665,17 @@ export default function App() {
 
   const handleGoHome = () => {
     playClickSound();
-    if (socket) {
-      socket.disconnect();
-      setSocket(null);
+    
+    // Stop listening to Firestore
+    if (roomUnsubscribeRef.current) {
+      roomUnsubscribeRef.current();
+      roomUnsubscribeRef.current = null;
     }
+    if (chatUnsubscribeRef.current) {
+      chatUnsubscribeRef.current();
+      chatUnsubscribeRef.current = null;
+    }
+
     setSettings(null);
     setOnlineRoom(null);
     setOnlineSymbol(null);
@@ -458,12 +692,11 @@ export default function App() {
     setTimeout(() => setCopiedCode(false), 2000);
   };
 
-  // Status message rendering
   const getStatusText = () => {
     if (!settings) return '';
 
     if (settings.mode === 'online') {
-      if (!onlineRoom) return 'جاري الاتصال بالسيرفر... 🌐';
+      if (!onlineRoom) return 'جاري الاتصال بالسيرفر الفايربيس... 🌐';
       if (onlineRoom.players.length < 2) return 'بانتظار انضمام لاعب آخر... ⌛';
 
       if (onlineRoom.gameOver) {
@@ -501,14 +734,12 @@ export default function App() {
     }
   };
 
-  // Celebrates if human wins or in friend/online mode someone wins
   const showConfetti = gameOver && winner !== 'draw' && (
     settings?.mode === 'friend' || 
     (settings?.mode === 'ai' && winner === settings?.userSymbol) ||
     (settings?.mode === 'online' && winner === onlineSymbol)
   );
 
-  // Quick Emoji helper
   const quickEmojis = ['😂', '😮', '🔥', '👑', '🤝', '🤫', '👏', '☠️'];
 
   return (
@@ -591,7 +822,7 @@ export default function App() {
                 </div>
                 <div className="space-y-2">
                   <h2 className="text-2xl font-bold text-white">جاري الاتصال بقنوات اللعب...</h2>
-                  <p className="text-sm text-gray-400">نقوم بتجهيز غرفة لعب آمنة ومخصصة لك</p>
+                  <p className="text-sm text-gray-400">نقوم بتجهيز غرفة لعب آمنة ومخصصة لك عبر الفايربيس</p>
                 </div>
 
                 {joinError && (
@@ -602,7 +833,7 @@ export default function App() {
 
                 <button
                   onClick={handleGoHome}
-                  className="px-6 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-sm font-bold rounded-xl text-gray-400 transition"
+                  className="px-6 py-2.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-sm font-bold rounded-xl text-gray-400 transition cursor-pointer"
                 >
                   إلغاء البحث والعودة
                 </button>
@@ -652,7 +883,7 @@ export default function App() {
                 <div className="border-t border-slate-800/80 pt-4">
                   <button
                     onClick={handleGoHome}
-                    className="w-full py-3 px-4 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-sm font-bold text-gray-400 hover:text-white transition"
+                    className="w-full py-3 px-4 bg-slate-950 hover:bg-slate-800 border border-slate-800 rounded-xl text-sm font-bold text-gray-400 hover:text-white transition cursor-pointer"
                   >
                     إلغاء الغرفة والعودة
                   </button>
@@ -676,6 +907,7 @@ export default function App() {
                         <img 
                           src={profile.picture || 'https://api.dicebear.com/7.x/bottts/svg?seed=me'} 
                           className="w-5 h-5 rounded-full border border-indigo-500/20"
+                          referrerPolicy="no-referrer"
                         />
                         <span className="text-xs font-bold text-gray-300 truncate max-w-[70px]">أنا ({onlineSymbol})</span>
                       </div>
@@ -693,13 +925,14 @@ export default function App() {
                       <div className="flex items-center justify-center gap-1.5 mb-1">
                         <img 
                           src={
-                            onlineRoom.players.find(p => p.id !== socket?.id)?.picture || 
+                            onlineRoom.players.find(p => p.id !== auth.currentUser?.uid)?.picture || 
                             'https://api.dicebear.com/7.x/bottts/svg?seed=opponent'
                           } 
                           className="w-5 h-5 rounded-full border border-pink-500/20"
+                          referrerPolicy="no-referrer"
                         />
                         <span className="text-xs font-bold text-gray-300 truncate max-w-[70px]">
-                          {onlineRoom.players.find(p => p.id !== socket?.id)?.name || 'المنافس'}
+                          {onlineRoom.players.find(p => p.id !== auth.currentUser?.uid)?.name || 'المنافس'}
                         </span>
                       </div>
                       <div className="text-2xl font-black text-pink-400 font-mono">
@@ -749,14 +982,14 @@ export default function App() {
                           <button
                             key={emoji}
                             onClick={() => handleSendChat(emoji)}
-                            className="text-lg hover:scale-125 transition transform active:scale-95 p-1 bg-slate-950/40 rounded-lg border border-slate-900"
+                            className="text-lg hover:scale-125 transition transform active:scale-95 p-1 bg-slate-950/40 rounded-lg border border-slate-900 cursor-pointer"
                           >
                             {emoji}
                           </button>
                         ))}
                         <button
                           onClick={handleSendBuzz}
-                          className="text-xs font-bold text-yellow-400 hover:text-yellow-300 px-2 py-1 bg-yellow-400/10 border border-yellow-400/20 rounded-lg hover:scale-105 active:scale-95 transition"
+                          className="text-xs font-bold text-yellow-400 hover:text-yellow-300 px-2 py-1 bg-yellow-400/10 border border-yellow-400/20 rounded-lg hover:scale-105 active:scale-95 transition cursor-pointer"
                           title="أرسل تنبيهًا صوتيًا لخصمك"
                         >
                           تنبيه! 🔔
@@ -825,7 +1058,7 @@ export default function App() {
                             />
                             <button
                               onClick={() => handleSendChat()}
-                              className="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition"
+                              className="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl transition cursor-pointer"
                             >
                               <Send className="w-3.5 h-3.5" />
                             </button>

@@ -1,0 +1,111 @@
+{
+  "entities": {
+    "userProfile": {
+      "title": "User Profile",
+      "description": "Stores logged in user statistics and profile info",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 150
+        },
+        "picture": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "wins": {
+          "type": "number"
+        },
+        "losses": {
+          "type": "number"
+        },
+        "draws": {
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": ["name", "email"]
+    },
+    "onlineRoom": {
+      "title": "Online Room",
+      "description": "Represents an online gaming room",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "players": {
+          "type": "array"
+        },
+        "board": {
+          "type": "array"
+        },
+        "turn": {
+          "type": "string",
+          "enum": ["X", "O"]
+        },
+        "gameOver": {
+          "type": "boolean"
+        },
+        "winner": {
+          "type": "string",
+          "enum": ["X", "O", "draw"]
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "lastActionTime": {
+          "type": "number"
+        }
+      },
+      "required": ["id", "players", "board", "turn", "gameOver"]
+    },
+    "chatMessage": {
+      "title": "Chat Message",
+      "description": "Represents a single message inside a room chat",
+      "type": "object",
+      "properties": {
+        "senderName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "senderId": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "text": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string"
+        }
+      },
+      "required": ["senderName", "senderId", "text"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "userProfile",
+      "description": "User profile and performance statistics"
+    },
+    "/rooms/{roomId}": {
+      "schema": "onlineRoom",
+      "description": "Active gaming rooms"
+    },
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": "chatMessage",
+      "description": "Messages sent in the gaming room"
+    }
+  }
+}
