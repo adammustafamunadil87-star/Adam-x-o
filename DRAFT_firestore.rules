@@ -2,12 +2,11 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Global Safety Net
+    // Default deny all
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Reusable, hardened global helpers
     function isSignedIn() {
       return request.auth != null;
     }
@@ -16,103 +15,22 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == userId;
     }
 
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    // Users Collection Rules
+    // Users Collection
     match /users/{userId} {
-      allow read: if isOwner(userId);
-      
-      allow create: if isOwner(userId) && 
-        incoming().keys().hasAll(['name', 'email']) &&
-        incoming().name is string && incoming().name.size() <= 100 &&
-        incoming().email is string && incoming().email.size() <= 150;
-        
-      allow update: if isOwner(userId) &&
-        incoming().name is string && incoming().name.size() <= 100 &&
-        incoming().email is string && incoming().email.size() <= 150 &&
-        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'picture', 'wins', 'losses', 'draws', 'updatedAt']);
+      allow read, write: if isOwner(userId);
     }
 
-    // Helper for checking if user is in room
-    function isPlayerInRoom(roomDoc, uid) {
-      return uid != null && (
-        (roomDoc.players.size() > 0 && roomDoc.players[0].id == uid) ||
-        (roomDoc.players.size() > 1 && roomDoc.players[1].id == uid)
-      );
-    }
-
-    // Rooms Collection Rules
+    // Rooms Collection
     match /rooms/{roomId} {
-      allow get: if isSignedIn() && isValidId(roomId);
-      
-      // Allow authenticated user to create a room
-      allow create: if isSignedIn() && isValidId(roomId) &&
-        incoming().keys().hasAll(['id', 'players', 'board', 'turn', 'gameOver']) &&
-        incoming().id == roomId &&
-        incoming().players is list && incoming().players.size() == 1 &&
-        incoming().players[0].id == request.auth.uid &&
-        incoming().board is list && incoming().board.size() == 9 &&
-        incoming().turn in ['X', 'O'] &&
-        incoming().gameOver == false;
+      allow read, create, update, delete: if isSignedIn();
 
-      // Allow updating the room (join, move, rematch)
-      allow update: if isSignedIn() && isValidId(roomId) && (
-        // Action 1: Join (a second player joins)
-        (
-          existing().players.size() == 1 &&
-          incoming().players.size() == 2 &&
-          incoming().players[0].id == existing().players[0].id &&
-          incoming().players[1].id == request.auth.uid &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['players', 'playerCount', 'updatedAt', 'lastActionTime'])
-        ) ||
-        // Action 2: Make Move (by the active player)
-        (
-          existing().players.size() == 2 &&
-          existing().gameOver == false &&
-          isPlayerInRoom(existing(), request.auth.uid) &&
-          (
-            // If it is my turn, symbol matches my player symbol, and turn changes
-            (existing().turn == 'X' && (
-              (existing().players[0].id == request.auth.uid && existing().players[0].symbol == 'X') ||
-              (existing().players[1].id == request.auth.uid && existing().players[1].symbol == 'X')
-            )) ||
-            (existing().turn == 'O' && (
-              (existing().players[0].id == request.auth.uid && existing().players[0].symbol == 'O') ||
-              (existing().players[1].id == request.auth.uid && existing().players[1].symbol == 'O')
-            ))
-          ) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['board', 'turn', 'gameOver', 'winner', 'updatedAt', 'lastActionTime'])
-        ) ||
-        // Action 3: Rematch (restart game)
-        (
-          existing().gameOver == true &&
-          isPlayerInRoom(existing(), request.auth.uid) &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['board', 'turn', 'gameOver', 'winner', 'updatedAt', 'lastActionTime'])
-        )
-      );
-    }
-
-    // Messages Subcollection Rules
-    match /rooms/{roomId}/messages/{messageId} {
-      allow read: if isSignedIn() && isPlayerInRoom(get(/databases/$(database)/documents/rooms/$(roomId)).data, request.auth.uid);
-      
-      allow create: if isSignedIn() && isValidId(messageId) &&
-        isPlayerInRoom(get(/databases/$(database)/documents/rooms/$(roomId)).data, request.auth.uid) &&
-        incoming().keys().hasAll(['senderName', 'senderId', 'text', 'roomPlayers']) &&
-        incoming().senderId == request.auth.uid &&
-        incoming().senderName is string && incoming().senderName.size() <= 100 &&
-        incoming().text is string && incoming().text.size() <= 500 &&
-        incoming().roomPlayers is list && request.auth.uid in incoming().roomPlayers;
+      // Messages Subcollection
+      match /messages/{messageId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn() && request.resource.data.senderId == request.auth.uid;
+        allow update, delete: if isSignedIn() && resource.data.senderId == request.auth.uid;
+      }
     }
   }
 }
+

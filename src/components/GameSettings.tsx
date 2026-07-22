@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Cpu, Users, Zap, Swords, ShieldCheck, HelpCircle, Globe, PlayCircle, KeyRound, Radio } from 'lucide-react';
+import { Cpu, Users, Zap, Swords, ShieldCheck, HelpCircle, Globe, PlayCircle, KeyRound, Radio, Sparkles } from 'lucide-react';
 import { GameSettingsState, PlayerType, DifficultyType, SymbolType, UserProfile } from '../types';
 import { playClickSound } from '../utils/audio';
 import GoogleLogin from './GoogleLogin';
@@ -9,7 +9,7 @@ interface GameSettingsProps {
   profile: UserProfile;
   onProfileChange: (profile: UserProfile) => void;
   onStartGame: (settings: GameSettingsState) => void;
-  onCreateOnlineRoom: (symbol: SymbolType) => void;
+  onCreateOnlineRoom: (symbol: SymbolType, customCode?: string) => void;
   onJoinOnlineRoom: (roomCode: string) => void;
   onQuickMatch: () => void;
 }
@@ -30,8 +30,24 @@ export default function GameSettings({
   const [player1Name, setPlayer1Name] = useState('اللاعب 1');
   const [player2Name, setPlayer2Name] = useState('الكمبيوتر');
   
-  // Online room code state
-  const [roomCode, setRoomCode] = useState('');
+  // Online room code states
+  const [joinCode, setJoinCode] = useState('');
+  const [customInviteCode, setCustomInviteCode] = useState('');
+
+  const generateInviteCode = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let result = '';
+    for (let i = 0; i < 6; i++) {
+      result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setCustomInviteCode(result);
+  };
+
+  useEffect(() => {
+    if (mode === 'online' && !customInviteCode) {
+      generateInviteCode();
+    }
+  }, [mode]);
 
   // Update Player 1 name when google profile changes
   useEffect(() => {
@@ -415,39 +431,74 @@ export default function GameSettings({
                   <div className="flex-grow border-t border-slate-800"></div>
                 </div>
 
-                {/* 2. Create Room */}
-                <button
-                  onClick={() => {
-                    playClickSound();
-                    onCreateOnlineRoom(userSymbol);
-                  }}
-                  className="w-full py-3.5 px-4 bg-slate-950 hover:bg-slate-800 border border-slate-800 text-indigo-400 hover:text-white rounded-xl font-bold text-sm flex items-center justify-center gap-2 transition transform active:scale-98"
-                >
-                  <KeyRound className="w-4.5 h-4.5" />
-                  <span>إنشاء غرفة لعب وتوليد رمز الدعوة</span>
-                </button>
+                {/* 2. Create Custom Invite Code Room */}
+                <div className="bg-slate-950/60 border border-indigo-500/20 p-4 rounded-xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                      <KeyRound className="w-4 h-4 text-indigo-400" />
+                      إنشاء رمز الدعوة الخاص بك:
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        generateInviteCode();
+                        playClickSound();
+                      }}
+                      className="text-xs text-indigo-400 hover:text-indigo-300 font-bold bg-indigo-500/10 hover:bg-indigo-500/20 px-2.5 py-1 rounded-lg border border-indigo-500/20 transition flex items-center gap-1 cursor-pointer"
+                    >
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>توليد تلقائي</span>
+                    </button>
+                  </div>
 
-                {/* 3. Join Room with code */}
-                <div className="space-y-2 pt-2">
-                  <span className="text-xs font-semibold text-gray-400 block">لديك رمز دعوة؟ أدخله هنا:</span>
                   <div className="flex gap-2">
                     <input
                       type="text"
-                      maxLength={4}
-                      value={roomCode}
-                      onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                      placeholder="أدخل الرمز (مثال: ABCD)"
-                      className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 text-sm text-white focus:outline-none focus:border-indigo-500 uppercase font-mono tracking-widest text-center"
+                      maxLength={10}
+                      value={customInviteCode}
+                      onChange={(e) => setCustomInviteCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                      placeholder="اكتب رمزك المخصص"
+                      className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 uppercase font-mono tracking-widest text-center"
                     />
                     <button
+                      type="button"
                       onClick={() => {
-                        if (roomCode.trim().length === 4) {
+                        playClickSound();
+                        onCreateOnlineRoom(userSymbol, customInviteCode.trim() || undefined);
+                      }}
+                      className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs sm:text-sm rounded-xl transition shadow-lg shadow-indigo-500/20 flex items-center gap-1.5 cursor-pointer flex-shrink-0"
+                    >
+                      <span>إنشاء الغرفة</span>
+                      <KeyRound className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-gray-500">
+                    يمكنك كتابة أي رمز دعوة تحبه وتمريره لصديقك للانضمام فوراً!
+                  </p>
+                </div>
+
+                {/* 3. Join Room with code */}
+                <div className="bg-slate-950/60 border border-slate-800 p-4 rounded-xl space-y-3">
+                  <span className="text-xs font-bold text-gray-300 block">لديك رمز دعوة من صديق؟ أدخله هنا:</span>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      maxLength={10}
+                      value={joinCode}
+                      onChange={(e) => setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
+                      placeholder="أدخل الرمز (مثال: ABCD)"
+                      className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500 uppercase font-mono tracking-widest text-center"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (joinCode.trim().length >= 3) {
                           playClickSound();
-                          onJoinOnlineRoom(roomCode.trim());
+                          onJoinOnlineRoom(joinCode.trim());
                         }
                       }}
-                      disabled={roomCode.trim().length !== 4}
-                      className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-bold rounded-xl transition"
+                      disabled={joinCode.trim().length < 3}
+                      className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs sm:text-sm font-bold rounded-xl transition cursor-pointer flex-shrink-0"
                     >
                       انضمام
                     </button>

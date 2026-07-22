@@ -401,14 +401,27 @@ export default function App() {
   };
 
   // --- ONLINE GAMEPLAY TRIGGERS ---
-  const handleCreateOnlineRoom = async (symbol: SymbolType) => {
+  const handleCreateOnlineRoom = async (symbol: SymbolType, customCode?: string) => {
     setIsSearching(true);
     setJoinError(null);
     setChatMessages([]);
 
     try {
       const user = await ensureUserSignedIn();
-      const roomId = generateRoomId();
+      const cleanCode = customCode ? customCode.trim().toUpperCase().replace(/[^A-Z0-9]/g, '') : '';
+      const roomId = cleanCode.length >= 3 ? cleanCode : generateRoomId();
+
+      // Check if room with this ID already exists and is currently full
+      const roomRef = doc(db, 'rooms', roomId);
+      const existingSnap = await getDoc(roomRef);
+      if (existingSnap.exists()) {
+        const data = existingSnap.data();
+        if (data && data.playerCount >= 2 && !data.gameOver) {
+          setJoinError(`رمز الدعوة (${roomId}) مستخدم حالياً لغرفة قائمة. يرجى اختيار رمز آخر.`);
+          setIsSearching(false);
+          return;
+        }
+      }
 
       setSettings({
         mode: 'online',
@@ -429,6 +442,7 @@ export default function App() {
           picture: profile.picture || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.uid}`,
           symbol: symbol
         }],
+        playerIds: [user.uid],
         board: Array(9).fill(null),
         turn: 'X',
         gameOver: false,
@@ -439,7 +453,7 @@ export default function App() {
         playerCount: 1
       };
 
-      await setDoc(doc(db, 'rooms', roomId), roomData);
+      await setDoc(roomRef, roomData);
       setupRoomListener(roomId, symbol);
     } catch (error) {
       console.error(error);
@@ -505,6 +519,7 @@ export default function App() {
 
         await updateDoc(roomRef, {
           players: players,
+          playerIds: [players[0].id, user.uid],
           playerCount: 2,
           updatedAt: new Date().toISOString(),
           lastActionTime: Date.now()
@@ -573,6 +588,7 @@ export default function App() {
 
         await updateDoc(doc(db, 'rooms', targetRoomId), {
           players: players,
+          playerIds: [players[0].id, user.uid],
           playerCount: 2,
           updatedAt: new Date().toISOString(),
           lastActionTime: Date.now()

@@ -44,6 +44,12 @@
         "players": {
           "type": "array"
         },
+        "playerIds": {
+          "type": "array"
+        },
+        "playerCount": {
+          "type": "number"
+        },
         "board": {
           "type": "array"
         },
