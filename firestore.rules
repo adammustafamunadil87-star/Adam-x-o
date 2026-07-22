@@ -73,7 +73,7 @@ service cloud.firestore {
           incoming().players.size() == 2 &&
           incoming().players[0].id == existing().players[0].id &&
           incoming().players[1].id == request.auth.uid &&
-          incoming().diff(existing()).affectedKeys().hasOnly(['players', 'updatedAt', 'lastActionTime'])
+          incoming().diff(existing()).affectedKeys().hasOnly(['players', 'playerCount', 'updatedAt', 'lastActionTime'])
         ) ||
         // Action 2: Make Move (by the active player)
         (
@@ -104,8 +104,7 @@ service cloud.firestore {
 
     // Messages Subcollection Rules
     match /rooms/{roomId}/messages/{messageId} {
-      allow get: if isSignedIn() && isPlayerInRoom(get(/databases/$(database)/documents/rooms/$(roomId)).data, request.auth.uid);
-      allow list: if isSignedIn() && request.auth.uid in resource.data.roomPlayers;
+      allow read: if isSignedIn() && isPlayerInRoom(get(/databases/$(database)/documents/rooms/$(roomId)).data, request.auth.uid);
       
       allow create: if isSignedIn() && isValidId(messageId) &&
         isPlayerInRoom(get(/databases/$(database)/documents/rooms/$(roomId)).data, request.auth.uid) &&
